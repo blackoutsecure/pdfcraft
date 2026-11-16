@@ -40,6 +40,19 @@ document ownership stay in Rust. Swift is limited to native views, accessibility
 Files access/coordination, presentation state, export/share sheets, and the typed bridge.
 There is no Android target, web wrapper, WebView, Electron, or separate PDF implementation.
 
+## Unsupported controls and future Apple distribution
+
+The dated [POC gap inventory and publishing guide](PUBLISHING.md) distinguishes the
+published baseline from newer local-only work. It records unsupported desktop
+controls, Apple organization membership, secure signing/API credential placement,
+private TestFlight testing, external beta review, App Review and release readiness.
+
+Shared workflow additions are proposed in
+[storytold/craft-common-actions#259](https://github.com/storytold/craft-common-actions/issues/259)
+and [its draft documentation PR](https://github.com/storytold/craft-common-actions/pull/260).
+No publishing workflow, credential or store submission is activated. Existing desktop
+CI/release behavior is unchanged; this remains a fork-only proof of concept.
+
 ## Architecture
 
 ```text
