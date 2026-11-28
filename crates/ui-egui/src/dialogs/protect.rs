@@ -1,18 +1,23 @@
-//! Protect Using Password, with the classic Password Security settings behind
-//! "Advanced Options" (compatibility, what to encrypt, printing, changes,
-//! copying, screen readers).
+//! Protect Using Password (Acrobat's simplified dialog, screenshot 13b), with the classic
+//! Password Security settings behind "Advanced Options" (compatibility, what to encrypt,
+//! printing, changes, copying, screen readers). Execution plan M8.1.
+//!
+//! Advanced Options can also set the other password so an open password and a permissions
+//! password can be configured together.
 
+use craft::theme::variant::Tone;
 use craft::ui::choice::{Checkbox, Radio, RadioGroup};
 use craft::ui::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _};
 use craft::ui::controls::disclosure::Disclosure;
 use craft::ui::dialog::{DialogId, DialogResult, DialogStack, StackDialog, dialog_id};
 use craft::ui::display::{Shade, Text};
-use craft::ui::form::Field;
+use craft::ui::form::{Field, Help};
 use craft::ui::layout_components::Row;
 use craft::ui::patterns::form_dialogs::{FormDialog, PasswordFields};
 use craft::ui::pickers::Select;
 use craft::ui::runtime::env::Label;
 use craft::ui::style::TypeRole;
+use craft::ui::text::TextField;
 use egui::Ui;
 use pdfcraft_engine::{Algorithm, Changes, Edit, Printing, Protection};
 
@@ -26,9 +31,10 @@ pub struct ProtectDraft {
     pub password: String,
     pub confirm: String,
     pub advanced: bool,
-    /// Advanced Options: also set the other password.
+    /// Advanced Options: also set the other password — a permissions password when the password
+    /// above is for Viewing, an open password when it is for Editing.
     pub both: bool,
-    /// The other password and confirmation (used only with `both`).
+    /// The other password and its confirmation (used only with `both`).
     pub second: String,
     pub second_confirm: String,
     pub protection: Protection,
@@ -69,29 +75,37 @@ impl ProtectDraft {
     /// Why Apply is disabled, if it is.
     pub fn problem(&self) -> Option<&'static str> {
         let ascii_only = |pw: &str| self.protection.algorithm != pdfcraft_engine::Algorithm::Aes256 && !pw.chars().all(|c| (' '..='~').contains(&c));
-        let same_to_the_file = |a: &str, b: &str| {
-            pdfcraft_cos::effective_password(self.protection.algorithm, a) == pdfcraft_cos::effective_password(self.protection.algorithm, b)
-        };
         if self.password.is_empty() {
             Some("Type a password.")
         } else if self.password != self.confirm {
             Some("The passwords don't match.")
         } else if ascii_only(&self.password) || (self.both && ascii_only(&self.second)) {
             Some("This compatibility level supports only plain ASCII passwords.")
+        } else if self.same_to_the_file(&self.password, "") {
+            Some("The password is made only of characters that passwords ignore, such as soft hyphens.")
         } else if self.both && self.second.is_empty() {
             Some(if self.viewing { "Type a permissions password." } else { "Type a document open password." })
         } else if self.both && self.second != self.second_confirm {
             Some(if self.viewing { "The permissions passwords don't match." } else { "The document open passwords don't match." })
-        } else if self.both && same_to_the_file(&self.second, "") {
+        } else if self.both && self.same_to_the_file(&self.second, "") {
             Some("The second password is made only of characters that passwords ignore, such as soft hyphens.")
-        } else if self.both && same_to_the_file(&self.second, &self.password) {
+        } else if self.both && self.same_to_the_file(&self.second, &self.password) {
             Some("The document open password and the permissions password must be different.")
         } else {
             None
         }
     }
 
-    /// Whether the resulting protection restricts printing, changes or copying.
+    /// Whether the file would take `a` and `b` as one password: encryption keys on a password as
+    /// [`pdfcraft_cos::effective_password`] gives it (128-bit AES and RC4 keep its first 32
+    /// bytes, 256-bit AES its SASLprep), and the engine refuses two that come out the same. Checked
+    /// here so Apply stays disabled and nothing typed is lost.
+    fn same_to_the_file(&self, a: &str, b: &str) -> bool {
+        let algorithm = self.protection.algorithm;
+        pdfcraft_cos::effective_password(algorithm, a) == pdfcraft_cos::effective_password(algorithm, b)
+    }
+
+    /// Whether the edit restricts printing, changes and copying (a permissions password is set).
     pub fn restricts(&self) -> bool {
         !self.viewing || self.both
     }
@@ -144,18 +158,10 @@ fn body(ui: &mut Ui, d: &mut ProtectDraft) -> bool {
         Text::new(advanced.clone()).show(ui);
     });
     if d.advanced {
-        let label = if d.viewing { "Also set a permissions password" } else { "Also set a document open password" };
-        Checkbox::new(Bind::bound(&mut d.both)).label(text(label)).show(ui);
-        if d.both {
-            let label = if d.viewing { "Permissions password" } else { "Document open password" };
-            let confirm = if d.viewing { "Re-type permissions password" } else { "Re-type document open password" };
-            PasswordFields::new(text(label), Bind::bound(&mut d.second)).show(ui);
-            PasswordFields::new(text(confirm), Bind::bound(&mut d.second_confirm)).show(ui);
-        }
         advanced_rows(ui, d);
     }
     let note = if d.both {
-        text("Opening the document and changing its restrictions require their respective passwords. They're applied when you save.")
+        text("The document needs its open password to open, and its permissions password to change the restrictions. Both are applied when you save.")
     } else if d.viewing {
         text("Anyone opening the document will need this password. It's applied when you save.")
     } else {
@@ -168,8 +174,7 @@ fn body(ui: &mut Ui, d: &mut ProtectDraft) -> bool {
 /// The classic Password Security settings.
 fn advanced_rows(ui: &mut Ui, d: &mut ProtectDraft) {
     use Algorithm as A;
-    let viewing = !d.restricts();
-    let p = &mut d.protection;
+    let restricts = d.restricts();
     let algos = [
         Entry::new(A::Aes256, text("Acrobat X and later (256-bit AES)")),
         Entry::new(A::Aes128, text("Acrobat 7.0 and later (128-bit AES)")),
@@ -178,14 +183,14 @@ fn advanced_rows(ui: &mut Ui, d: &mut ProtectDraft) {
     ];
     let label = text("Compatibility");
     Field::new(label.clone()).show(ui, |ui, _| {
-        if let Some(a) = Select::new(label.clone(), Bind::given(p.algorithm), &algos).show(ui).value().copied() {
-            p.algorithm = a;
+        if let Some(a) = Select::new(label.clone(), Bind::given(d.protection.algorithm), &algos).show(ui).value().copied() {
+            d.protection.algorithm = a;
         }
     });
     // Unencrypted metadata needs crypt filters (Acrobat 6.0 and later), which RC4 lacks.
-    let rc4 = p.algorithm == A::Rc4_40 || p.algorithm == A::Rc4_128;
+    let rc4 = d.protection.algorithm == A::Rc4_40 || d.protection.algorithm == A::Rc4_128;
     if rc4 {
-        p.encrypt_metadata = true;
+        d.protection.encrypt_metadata = true;
     }
     let mut what = vec![Entry::new(true, text("All document contents"))];
     if !rc4 {
@@ -193,13 +198,39 @@ fn advanced_rows(ui: &mut Ui, d: &mut ProtectDraft) {
     }
     let label = text("Encrypt");
     Field::new(label.clone()).show(ui, |ui, _| {
-        if let Some(all) = Select::new(label.clone(), Bind::given(p.encrypt_metadata), &what).show(ui).value().copied() {
-            p.encrypt_metadata = all;
+        if let Some(all) = Select::new(label.clone(), Bind::given(d.protection.encrypt_metadata), &what).show(ui).value().copied() {
+            d.protection.encrypt_metadata = all;
         }
     });
-    if viewing {
+    let both_label = text(if d.viewing { "Restrict editing and printing of the document" } else { "Require a password to open the document" });
+    Checkbox::new(Bind::bound(&mut d.both)).label(both_label).show(ui);
+    if d.both {
+        let (first_label, second_label) = if d.viewing {
+            (text("Change Permissions Password"), text("Re-type Permissions Password"))
+        } else {
+            (text("Document Open Password"), text("Re-type Document Open Password"))
+        };
+        let second_error = d.problem().filter(|_| !d.second.is_empty() || !d.second_confirm.is_empty()).map(|p| Label::from(text(p)));
+        let mut first_field = Field::new(first_label.clone());
+        if let Some(err) = second_error {
+            first_field = first_field.help(Help::Status(Tone::Bad, err));
+        }
+        first_field.show(ui, |ui, _| {
+            TextField::new(first_label.clone(), Bind::bound(&mut d.second)).masked().show(ui);
+        });
+        let mismatch = (!d.second_confirm.is_empty() && d.second != d.second_confirm).then(|| Label::from(text("The passwords don't match.")));
+        let mut second_field = Field::new(second_label.clone());
+        if let Some(mismatch) = mismatch {
+            second_field = second_field.help(Help::Status(Tone::Bad, mismatch));
+        }
+        second_field.show(ui, |ui, _| {
+            TextField::new(second_label.clone(), Bind::bound(&mut d.second_confirm)).masked().show(ui);
+        });
+    }
+    if !restricts {
         return;
     }
+    let p = &mut d.protection;
     let printing = [
         Entry::new(Printing::None, text("None")),
         Entry::new(Printing::Low, text("Low Resolution (150 dpi)")),
@@ -226,6 +257,9 @@ fn advanced_rows(ui: &mut Ui, d: &mut ProtectDraft) {
     });
     Checkbox::new(Bind::bound(&mut p.copy)).label(text("Enable copying of text, images, and other content")).show(ui);
     Checkbox::new(Bind::bound(&mut p.accessibility)).label(text("Enable text access for screen reader devices for the visually impaired")).show(ui);
+    if p.algorithm == A::Rc4_40 && p.printing == Printing::Low {
+        p.printing = Printing::None;
+    }
 }
 
 impl StackDialog for ProtectDialog {
@@ -291,18 +325,48 @@ mod tests {
             Edit::Protect(p) => assert_eq!((p.open_password, p.permissions_password.as_deref()), (None, Some("abc"))),
             other => panic!("{other:?}"),
         }
+        // Advanced Options can set the other password too.
         d.both = true;
         assert_eq!(d.problem(), Some("Type a document open password."));
         d.second = "open".into();
+        d.second_confirm = "opem".into();
+        assert_eq!(d.problem(), Some("The document open passwords don't match."));
         d.second_confirm = "open".into();
         assert_eq!(d.problem(), None);
         match d.edit() {
             Edit::Protect(p) => assert_eq!((p.open_password.as_deref(), p.permissions_password.as_deref()), (Some("open"), Some("abc"))),
             other => panic!("{other:?}"),
         }
+        d.viewing = true;
+        assert_eq!(d.problem(), None);
+        match d.edit() {
+            Edit::Protect(p) => assert_eq!((p.open_password.as_deref(), p.permissions_password.as_deref()), (Some("abc"), Some("open"))),
+            other => panic!("{other:?}"),
+        }
         d.second = "abc".into();
         d.second_confirm = "abc".into();
         assert_eq!(d.problem(), Some("The document open password and the permissions password must be different."));
+        // 128-bit AES keeps a password's first 32 bytes: two that differ only after them are one
+        // password to the file, which the engine refuses, so Apply stays disabled.
+        let a32 = "a".repeat(32);
+        d.protection.algorithm = pdfcraft_engine::Algorithm::Aes128;
+        (d.password, d.confirm) = (format!("{a32}1"), format!("{a32}1"));
+        (d.second, d.second_confirm) = (format!("{a32}2"), format!("{a32}2"));
+        assert_eq!(d.problem(), Some("The document open password and the permissions password must be different."));
+        d.protection.algorithm = pdfcraft_engine::Algorithm::Aes256;
+        assert_eq!(d.problem(), None, "256-bit AES keeps them apart");
+        // Soft hyphens (U+00AD) are dropped by SASLprep, resulting in an empty effective password.
+        d.second = "\u{00AD}".into();
+        d.second_confirm = "\u{00AD}".into();
+        assert_eq!(d.problem(), Some("The second password is made only of characters that passwords ignore, such as soft hyphens."));
+        // The primary password must also reject an empty effective password in both viewing and editing roles.
+        d.both = false;
+        d.viewing = true;
+        d.password = "\u{00AD}".into();
+        d.confirm = "\u{00AD}".into();
+        assert_eq!(d.problem(), Some("The password is made only of characters that passwords ignore, such as soft hyphens."));
+        d.viewing = false;
+        assert_eq!(d.problem(), Some("The password is made only of characters that passwords ignore, such as soft hyphens."));
     }
 
     /// Types into the password field `label`: its input, not the field group or its label that share the name.
