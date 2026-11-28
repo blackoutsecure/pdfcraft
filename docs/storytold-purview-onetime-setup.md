@@ -335,6 +335,55 @@ Official Microsoft guidance:
 - [Federate a Microsoft Entra workforce tenant into an external tenant](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-entra-id-federation-customers)
 - [Entra configuration for Purview-encrypted content](https://learn.microsoft.com/en-us/purview/encryption-azure-ad-configuration)
 
+## Storytold setup script
+
+The idempotent reference script is
+[`tools/configure-storytold-purview-entra.sh`](../tools/configure-storytold-purview-entra.sh).
+Run it from the repository root. It asks for every environment-specific value, or accepts
+the same values through `PURVIEW_*` environment variables for an attended automation run.
+It is the supported way to reproduce the required POC or Storytold suite registration.
+
+```bash
+./tools/configure-storytold-purview-entra.sh
+```
+
+Required inputs:
+
+| Variable | Purpose |
+|---|---|
+| `PURVIEW_HOME_TENANT_ID` | Workforce tenant that owns the application registration. |
+| `PURVIEW_APP_ID` | Existing application client ID. Leave blank and set `PURVIEW_CREATE_APP=yes` to create a new registration. |
+| `PURVIEW_APP_DISPLAY_NAME` | Stable application name; required only when creating a new registration. |
+| `PURVIEW_TARGET_TENANT_IDS` | Optional comma/space-separated resource or test workforce tenants to install and consent. Do not enter an External ID/CIAM tenant here. |
+| `PURVIEW_CONFIRM` | Set to `yes` for a non-interactive run. |
+
+Use `PURVIEW_NONINTERACTIVE=yes` with environment variables in automation. Use
+`./tools/configure-storytold-purview-entra.sh --dry-run` to review the inputs and planned
+identity boundary without changing Microsoft Entra.
+
+The signed-in operator must have an active **Global Administrator**, **Cloud Application
+Administrator**, or **Application Administrator** role in the home tenant and in every
+target tenant requested by `PURVIEW_TARGET_TENANT_IDS`. Activate any PIM-eligible role
+before running the script; it fails before mutation if the required role is not active.
+
+The script:
+
+- creates or updates one multitenant, public/native registration;
+- sets organizational-directory account types and `http://localhost`;
+- enables public client flows and disables implicit grants;
+- instantiates the Azure Rights Management Services and Microsoft Information Protection
+  Sync Service principals when absent;
+- adds only `user_impersonation` and `UnifiedPolicy.User.Read`;
+- removes the unnecessary Microsoft Graph `User.Read` permission and stale Graph consent;
+- grants tenant-wide delegated consent in the home tenant and each requested target tenant;
+- verifies the public-client settings and consent grants; and
+- refuses an app that contains a client secret or certificate.
+
+It never creates a client secret. It does not automate Partner Center publisher
+verification, Partner Global Account tenant association, publisher-domain configuration,
+the Microsoft MIP IPIA, customer licensing, labels, or protected-document fixtures.
+Those remain explicit production and tenant onboarding gates in this runbook.
+
 ## Step 1: Create the Storytold app registration
 
 Open the [Microsoft Entra admin center](https://entra.microsoft.com).
